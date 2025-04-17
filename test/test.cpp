@@ -1,6 +1,7 @@
 
 #include <iostream>
-#include "src/main.cpp"
+#include "src/gstreamer.cpp" // импорт модуля с src папки, для теста 
+
 
 
 int main() {

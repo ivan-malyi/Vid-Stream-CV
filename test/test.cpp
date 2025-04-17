@@ -1,6 +1,6 @@
 
 #include <iostream>
-#include "src/gstreamer.cpp" // импорт модуля с src папки, для теста 
+#include "../src/gstreamer_with_opencv.cpp" // импорт модуля с src папки, для теста 
 
 
 

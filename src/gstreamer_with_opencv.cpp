@@ -4,6 +4,10 @@
 #include <gst/app/gstappsink.h> 
 #include <iostream> 
 #include <string>
+// Добавляем заголовочные файлы OpenCV
+#include <opencv2/opencv.hpp>
+#include <opencv2/highgui.hpp>
+#include <opencv2/imgproc.hpp>
 
 /* 
             Обработчик сообщений из шины GStreamer
@@ -38,9 +42,6 @@ static gboolean bus_callback(GstBus *bus, GstMessage *message, gpointer data) {
 
 // Обработчик новых сэмплов (кадров) из appsink
 // Эта функция вызывается каждый раз, когда appsink получает новый кадр
-// В функции используется maping от Gstreamer, который предосталвяет безопасный доступ к буферу: блокирует доступ к буферу на момент записи 
-// map.data: Указатель на данные буфера (в нашем случае — кадр видео).
-// map.size: Размер данных в байтах.
 static GstFlowReturn new_sample_callback(GstElement *sink, gpointer data) {
     GstSample *sample;
     GstBuffer *buffer;
@@ -53,11 +54,50 @@ static GstFlowReturn new_sample_callback(GstElement *sink, gpointer data) {
         
         // Отображаем буфер в память для чтения
         if (gst_buffer_map(buffer, &map, GST_MAP_READ)) {
-            // Здесь данные кадра доступны в map.data
-            // Размер данных: map.size
-            // Тут будем пользоваться OpenCV для обработки кадров с видео, передаваемое через Gstreamer 
+            // Получаем информацию о структуре кадра из caps
+            GstCaps *caps = gst_sample_get_caps(sample);
+            GstStructure *structure = gst_caps_get_structure(caps, 0);
             
-            std::cout << "Received frame: " << map.size << " bytes" << std::endl;
+            // Получаем ширину и высоту изображения из структуры
+            int width, height;
+            gst_structure_get_int(structure, "width", &width);
+            gst_structure_get_int(structure, "height", &height);
+            
+            // Преобразуем данные буфера в формат OpenCV Mat
+            // RGB формат из GStreamer конвертируем в BGR для OpenCV
+            cv::Mat frame(height, width, CV_8UC3, (void*)map.data);
+            
+            // Глубокое копирование для предотвращения конфликтов после размаппирования
+            cv::Mat processedFrame = frame.clone();
+            
+            // *** Обработка изображения с помощью OpenCV ***
+            
+            // 1. Меняем цветовое пространство RGB на BGR
+            cv::cvtColor(processedFrame, processedFrame, cv::COLOR_RGB2BGR);
+            
+            // 2. Применяем размытие по Гауссу
+            cv::GaussianBlur(processedFrame, processedFrame, cv::Size(5, 5), 1.5);
+            
+            // 3. Обнаружение краев с помощью Canny
+            cv::Mat edges;
+            cv::Canny(processedFrame, edges, 100, 200);
+            
+            // 4. Поиск контуров
+            std::vector<std::vector<cv::Point>> contours;
+            cv::findContours(edges, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
+            
+            // 5. Рисуем контуры на исходном изображении
+            cv::drawContours(processedFrame, contours, -1, cv::Scalar(0, 255, 0), 2);
+            
+            // 6. Добавляем текст с информацией
+            std::string info = "Frame size: " + std::to_string(map.size) + " bytes, Contours: " + std::to_string(contours.size());
+            cv::putText(processedFrame, info, cv::Point(10, 30), cv::FONT_HERSHEY_SIMPLEX, 0.7, cv::Scalar(0, 0, 255), 2);
+            
+            // 7. Отображаем результат
+            cv::imshow("GStreamer + OpenCV", processedFrame);
+            cv::waitKey(1); // Обновление окна (1мс)
+            
+            std::cout << "Processed frame: " << map.size << " bytes, found " << contours.size() << " contours" << std::endl;
             
             // Размапливаем буфер - обязательное дейсвие, после обработки кадра, чтобы разблокировать буфер 
             gst_buffer_unmap(buffer, &map);
@@ -126,6 +166,9 @@ int main(int argc, char *argv[]) {
         return -1;
     }
     
+    // Создаем окно OpenCV перед запуском конвейера
+    cv::namedWindow("GStreamer + OpenCV", cv::WINDOW_AUTOSIZE);
+    
     // Подключаем обработчик сообщений к шине
     GstBus *bus = gst_element_get_bus(pipeline);
     gst_bus_add_watch(bus, bus_callback, loop);
@@ -148,6 +191,9 @@ int main(int argc, char *argv[]) {
     gst_element_set_state(pipeline, GST_STATE_NULL);
     gst_object_unref(pipeline);
     g_main_loop_unref(loop);
+    
+    // Закрываем окно OpenCV
+    cv::destroyAllWindows();
     
     return 0;
 }

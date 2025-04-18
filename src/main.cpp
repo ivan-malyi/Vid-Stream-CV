@@ -11,6 +11,22 @@
 
 using namespace cv;
 
+typedef struct _SrcData {
+    GstElement* pipeline;
+    GstElement* source;
+    GstElement* convert;
+    GstElement* sink;
+} SrcData;
+
+typedef struct _DstData {
+    GstElement* pipeline;
+    GstElement* appsrc;
+    GstElement* convert;
+    GstElement* encoder; // Encoder to link videoconvert and payloader
+    GstElement* payloader;
+    GstElement* udpsink;
+} DstData;
+
 GstBuffer *mat_to_gst_buffer(const Mat &frame) {
     gsize size = frame.step[0] * frame.rows;
 
@@ -109,47 +125,50 @@ Mat gst_sample_to_mat(GstSample* sample) {
 int main(int argc, char** argv) {
     gst_init(&argc, &argv);
 
+    SrcData src_data;
+    DstData dst_data;
+
     // Source pipeline
-    GstElement* pipeline = gst_pipeline_new("pipeline");
-    GstElement* source = gst_element_factory_make("v4l2src", "source");
-    GstElement* convert = gst_element_factory_make("videoconvert", "convert");
-    GstElement* sink = gst_element_factory_make("appsink", "sink");
+    src_data.pipeline = gst_pipeline_new("src_pipeline");
+    src_data.source = gst_element_factory_make("v4l2src", "src_source");
+    src_data.convert = gst_element_factory_make("videoconvert", "src_convert");
+    src_data.sink = gst_element_factory_make("appsink", "src_sink");
 
     // Dst pipeline
-    GstElement* dst_pipeline = gst_pipeline_new("dst_pipeline");
-    GstElement* appsrc = gst_element_factory_make("appsrc", "source");
-    GstElement* convert2 = gst_element_factory_make("videoconvert", "convert2");
-    GstElement* encoder = gst_element_factory_make("x264enc", "encoder"); // Encoder to link videoconvert and payloader
-    GstElement* payloader = gst_element_factory_make("rtph264pay", "payloader");
-    GstElement* udpsink = gst_element_factory_make("udpsink", "udpsink");
+    dst_data.pipeline = gst_pipeline_new("dst_pipeline");
+    dst_data.appsrc = gst_element_factory_make("appsrc", "dst_source");
+    dst_data.convert = gst_element_factory_make("videoconvert", "dst_convert");
+    dst_data.encoder = gst_element_factory_make("x264enc", "dst_encoder"); // Encoder to link videoconvert and payloader
+    dst_data.payloader = gst_element_factory_make("rtph264pay", "dst_payloader");
+    dst_data.udpsink = gst_element_factory_make("udpsink", "dst_udpsink");
 
-    if (!pipeline || !source || !convert || !sink) {
+    if (!src_data.pipeline || !src_data.source || !src_data.convert || !src_data.sink) {
         std::cerr << "Couldn't create src elements." << std::endl;
         return -1;
     }
 
-    if (!dst_pipeline || !appsrc || !convert2 || !encoder || !payloader || !udpsink) {
+    if (!dst_data.pipeline || !dst_data.appsrc || !dst_data.convert|| !dst_data.encoder || !dst_data.payloader || !dst_data.udpsink) {
         std::cerr << "Couldn't create dst elements." << std::endl;
         return -1;
     }
 
     // Config appsrc
-    g_object_set(G_OBJECT(appsrc), "stream-type", 0, NULL);
-    g_object_set(G_OBJECT(appsrc), "format", GST_FORMAT_TIME, NULL);
-    g_object_set(G_OBJECT(appsrc), "is-live", TRUE, NULL);
+    g_object_set(G_OBJECT(dst_data.appsrc), "stream-type", 0, NULL);
+    g_object_set(G_OBJECT(dst_data.appsrc), "format", GST_FORMAT_TIME, NULL);
+    g_object_set(G_OBJECT(dst_data.appsrc), "is-live", TRUE, NULL);
 
     // Config UDP-sink
-    g_object_set(G_OBJECT(udpsink), "host", "192.168.1.100", NULL);
-    g_object_set(G_OBJECT(udpsink), "port", 5000, NULL);
+    g_object_set(G_OBJECT(dst_data.udpsink), "host", "192.168.1.100", NULL);
+    g_object_set(G_OBJECT(dst_data.udpsink), "port", 5000, NULL);
 
     // Config encoder
-    g_object_set(G_OBJECT(encoder), "tune", 4, NULL);  // zerolatency preset
-    g_object_set(G_OBJECT(encoder), "speed-preset", 1, NULL);  // ultrafast
-    g_object_set(G_OBJECT(encoder), "bitrate", 500, NULL);  // 500 kbps
+    g_object_set(G_OBJECT(dst_data.encoder), "tune", 4, NULL);  // zerolatency preset
+    g_object_set(G_OBJECT(dst_data.encoder), "speed-preset", 1, NULL);  // ultrafast
+    g_object_set(G_OBJECT(dst_data.encoder), "bitrate", 500, NULL);  // 500 kbps
 
     // Config appsink
-    g_object_set(G_OBJECT(sink), "emit-signals", TRUE, NULL);
-    g_object_set(G_OBJECT(sink), "drop", TRUE, NULL);
+    g_object_set(G_OBJECT(src_data.sink), "emit-signals", TRUE, NULL);
+    g_object_set(G_OBJECT(src_data.sink), "drop", TRUE, NULL);
 
     GstCaps* caps = gst_caps_new_simple("video/x-raw",
         "format", G_TYPE_STRING, "RGB",
@@ -158,29 +177,29 @@ int main(int argc, char** argv) {
         "framerate", GST_TYPE_FRACTION, 30, 1,
         NULL);
 
-    gst_app_sink_set_caps(GST_APP_SINK(sink), caps);
-    g_object_set(G_OBJECT(appsrc), "caps", caps, NULL);
+    gst_app_sink_set_caps(GST_APP_SINK(src_data.sink), caps);
+    g_object_set(G_OBJECT(dst_data.appsrc), "caps", caps, NULL);
 
-    gst_bin_add_many(GST_BIN(pipeline), source, convert, sink, NULL);
-    gst_bin_add_many(GST_BIN(dst_pipeline), appsrc, convert2, encoder, payloader, udpsink, NULL);
+    gst_bin_add_many(GST_BIN(src_data.pipeline), src_data.source, src_data.convert, src_data.sink, NULL);
+    gst_bin_add_many(GST_BIN(dst_data.pipeline), dst_data.appsrc, dst_data.convert, dst_data.encoder, dst_data.payloader, dst_data.udpsink , NULL);
 
-    if (!gst_element_link_many(source, convert, sink, NULL)) {
+    if (!gst_element_link_many(src_data.source, src_data.convert, src_data.sink, NULL)) {
         std::cerr << "Couldn't link gstreamer elements" << std::endl;
         return -1;
     }
 
-    if (!gst_element_link_many(appsrc, convert2, encoder, payloader, udpsink, NULL)) {
+    if (!gst_element_link_many(dst_data.appsrc, dst_data.convert, dst_data.encoder, dst_data.payloader, dst_data.udpsink , NULL)) {
         std::cerr << "Couldn't link dst elements" << std::endl;
         return -1;
     }
 
-    gst_element_set_state(pipeline, GST_STATE_PLAYING);
-    gst_element_set_state(dst_pipeline, GST_STATE_PLAYING);
+    gst_element_set_state(src_data.pipeline, GST_STATE_PLAYING);
+    gst_element_set_state(dst_data.pipeline, GST_STATE_PLAYING);
 
     namedWindow("GStreamer to OpenCV", WINDOW_AUTOSIZE);
 
     while (true) {
-        GstSample* sample = gst_app_sink_pull_sample(GST_APP_SINK(sink));
+        GstSample* sample = gst_app_sink_pull_sample(GST_APP_SINK(src_data.sink));
         
         if (!sample) {
             std::cerr << "Couldn't acquire sample" << std::endl;
@@ -207,7 +226,7 @@ int main(int argc, char** argv) {
         GstSample* out_sample = mat_to_gst_sample(processed_frame, caps);
     
         if (out_sample) {
-            GstFlowReturn ret = gst_app_src_push_sample(GST_APP_SRC(appsrc), out_sample);
+            GstFlowReturn ret = gst_app_src_push_sample(GST_APP_SRC(dst_data.appsrc), out_sample);
             gst_sample_unref(out_sample);
             
             if (ret != GST_FLOW_OK) {
@@ -217,9 +236,13 @@ int main(int argc, char** argv) {
         }
     }
 
+
+    destroyAllWindows();
     gst_caps_unref(caps);
-    gst_element_set_state(pipeline, GST_STATE_NULL);
-    gst_object_unref(GST_OBJECT(pipeline));
+    gst_element_set_state(src_data.pipeline, GST_STATE_NULL);
+    gst_element_set_state(dst_data.pipeline, GST_STATE_NULL);
+    gst_object_unref(GST_OBJECT(src_data.pipeline));
+    gst_object_unref(GST_OBJECT(dst_data.pipeline));
     
     return 0;
 }

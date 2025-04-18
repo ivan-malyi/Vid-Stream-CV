@@ -152,23 +152,23 @@ int main(int argc, char** argv) {
         return -1;
     }
 
+    // Config appsink
+    g_object_set(G_OBJECT(src_data.sink), "emit-signals", TRUE, NULL);
+    g_object_set(G_OBJECT(src_data.sink), "drop", TRUE, NULL);
+
     // Config appsrc
     g_object_set(G_OBJECT(dst_data.appsrc), "stream-type", 0, NULL);
     g_object_set(G_OBJECT(dst_data.appsrc), "format", GST_FORMAT_TIME, NULL);
     g_object_set(G_OBJECT(dst_data.appsrc), "is-live", TRUE, NULL);
-
-    // Config UDP-sink
-    g_object_set(G_OBJECT(dst_data.udpsink), "host", "192.168.1.100", NULL);
-    g_object_set(G_OBJECT(dst_data.udpsink), "port", 5000, NULL);
 
     // Config encoder
     g_object_set(G_OBJECT(dst_data.encoder), "tune", 4, NULL);  // zerolatency preset
     g_object_set(G_OBJECT(dst_data.encoder), "speed-preset", 1, NULL);  // ultrafast
     g_object_set(G_OBJECT(dst_data.encoder), "bitrate", 500, NULL);  // 500 kbps
 
-    // Config appsink
-    g_object_set(G_OBJECT(src_data.sink), "emit-signals", TRUE, NULL);
-    g_object_set(G_OBJECT(src_data.sink), "drop", TRUE, NULL);
+    // Config UDP-sink
+    g_object_set(G_OBJECT(dst_data.udpsink), "host", "192.168.1.100", NULL);
+    g_object_set(G_OBJECT(dst_data.udpsink), "port", 5000, NULL);
 
     GstCaps* caps = gst_caps_new_simple("video/x-raw",
         "format", G_TYPE_STRING, "RGB",

@@ -30,6 +30,8 @@ typedef struct _DstData {
     GstElement* udpsink;
 } DstData;
 
+GMainLoop *main_loop = nullptr;
+
 // Обработчик сообщений из шины GStreamer
 static gboolean bus_callback(GstBus *bus, GstMessage *message, gpointer data) {
     GMainLoop *loop = (GMainLoop*)data;
@@ -181,12 +183,64 @@ Mat process_frame(const Mat &input_frame) {
     return processed_frame;
 }
 
+static GstFlowReturn new_sample_callback(GstElement *sink, gpointer data) {
+    DstData* dst_data = (DstData*)data;
+    GstSample *sample;
+    
+    // Get sample from appsink
+    sample = gst_app_sink_pull_sample(GST_APP_SINK(sink));
+    
+    if (!sample) {
+        std::cerr << "Couldn't acquire sample" << std::endl;
+        return GST_FLOW_ERROR;
+    }
+    
+    // Convert sample to Mat
+    Mat frame = gst_sample_to_mat(sample);
+    
+    if (frame.empty()) {
+        std::cerr << "Empty frame!" << std::endl;
+        gst_sample_unref(sample);
+        return GST_FLOW_ERROR;
+    }
+    
+    // Process the image
+    Mat processed_frame = process_frame(frame);
+    
+    // Display the result
+    imshow("GStreamer + OpenCV", processed_frame);
+    int key = waitKey(30);
+    if (key == 27) { // ESC key
+        g_main_loop_quit(main_loop);
+    }
+    
+    // Get caps from sample to create a new sample
+    GstCaps* caps = gst_sample_get_caps(sample);
+    gst_sample_unref(sample);
+    
+    // Create a new sample from processed image
+    GstSample* out_sample = mat_to_gst_sample(processed_frame, caps);
+    
+    if (out_sample) {
+        // Send processed frame to UDP stream
+        GstFlowReturn ret = gst_app_src_push_sample(GST_APP_SRC(dst_data->appsrc), out_sample);
+        gst_sample_unref(out_sample);
+        
+        if (ret != GST_FLOW_OK) {
+            std::cerr << "Error during sending frame to appsrc: " << ret << std::endl;
+            return GST_FLOW_ERROR;
+        }
+    }
+    
+    return GST_FLOW_OK;
+}
+
 int main(int argc, char *argv[]) {
     // Инициализация GStreamer
     gst_init(&argc, &argv);
     
     // Создаем главный цикл
-    GMainLoop *loop = g_main_loop_new(NULL, FALSE);
+    main_loop = g_main_loop_new(NULL, FALSE);
     
     // Создаем структуры для конвейеров
     SrcData src_data;
@@ -251,6 +305,9 @@ int main(int argc, char *argv[]) {
     // Устанавливаем caps для appsink и appsrc
     gst_app_sink_set_caps(GST_APP_SINK(src_data.sink), caps);
     g_object_set(G_OBJECT(dst_data.appsrc), "caps", caps, NULL);
+
+    // Connect handler for new frames
+    g_signal_connect(src_data.sink, "new-sample", G_CALLBACK(new_sample_callback), &dst_data);
     
     // Добавляем элементы в конвейеры
     gst_bin_add_many(GST_BIN(src_data.pipeline), src_data.source, src_data.convert, src_data.scale, src_data.sink, NULL);
@@ -272,97 +329,42 @@ int main(int argc, char *argv[]) {
         return -1;
     }
     
-    // Создаем окно OpenCV для отображения
-    namedWindow("GStreamer + OpenCV", WINDOW_AUTOSIZE);
-    
-    // Подключаем обработчик сообщений к шинам обоих конвейеров
     GstBus *src_bus = gst_element_get_bus(src_data.pipeline);
-    GstBus *dst_bus = gst_element_get_bus(dst_data.pipeline);
-    gst_bus_add_watch(src_bus, bus_callback, loop);
-    gst_bus_add_watch(dst_bus, bus_callback, loop);
+    gst_bus_add_watch(src_bus, bus_callback, main_loop);
     gst_object_unref(src_bus);
+    
+    GstBus *dst_bus = gst_element_get_bus(dst_data.pipeline);
+    gst_bus_add_watch(dst_bus, bus_callback, main_loop);
     gst_object_unref(dst_bus);
     
-    // Запускаем конвейеры
+    // Create OpenCV window
+    namedWindow("GStreamer + OpenCV", WINDOW_AUTOSIZE);
+    
+    // Start pipelines
     GstStateChangeReturn src_ret = gst_element_set_state(src_data.pipeline, GST_STATE_PLAYING);
     GstStateChangeReturn dst_ret = gst_element_set_state(dst_data.pipeline, GST_STATE_PLAYING);
     
     if (src_ret == GST_STATE_CHANGE_FAILURE || dst_ret == GST_STATE_CHANGE_FAILURE) {
-        std::cerr << "Не удалось запустить конвейеры!" << std::endl;
-        gst_object_unref(src_data.pipeline);
-        gst_object_unref(dst_data.pipeline);
+        std::cerr << "Failed to start pipeline!" << std::endl;
         return -1;
     }
     
-    std::cout << "Конвейеры запущены, захват и передача видео начаты..." << std::endl;
-    std::cout << "Нажмите ESC для выхода" << std::endl;
+    std::cout << "Pipelines started, capturing video..." << std::endl;
     
-    // Основной цикл обработки кадров
-    bool running = true;
-    while (running) {
-        // Получаем сэмпл из appsink
-        GstSample *sample = gst_app_sink_pull_sample(GST_APP_SINK(src_data.sink));
-        
-        if (!sample) {
-            std::cerr << "Не удалось получить сэмпл" << std::endl;
-            continue;
-        }
-        
-        // Преобразуем сэмпл в Mat
-        Mat frame = gst_sample_to_mat(sample);
-        
-        // Освобождаем сэмпл GStreamer
-        gst_sample_unref(sample);
-        
-        if (frame.empty()) {
-            std::cerr << "Пустой кадр!" << std::endl;
-            continue;
-        }
-        
-        // Обрабатываем кадр с помощью OpenCV
-        Mat processed_frame = process_frame(frame);
-        
-        // Отображаем результат
-        imshow("GStreamer + OpenCV", processed_frame);
-        
-        // Преобразуем обработанный кадр обратно в сэмпл GStreamer
-        GstSample *out_sample = mat_to_gst_sample(processed_frame, caps);
-        
-        if (out_sample) {
-            // Отправляем обработанный кадр в appsrc
-            GstFlowReturn ret = gst_app_src_push_sample(GST_APP_SRC(dst_data.appsrc), out_sample);
-            gst_sample_unref(out_sample);
-            
-            if (ret != GST_FLOW_OK) {
-                std::cerr << "Ошибка при отправке кадра в appsrc: " << ret << std::endl;
-                break;
-            }
-        }
-        
-        // Обработка нажатия клавиши ESC для выхода
-        int key = waitKey(1);
-        if (key == 27) { // ESC
-            running = false;
-        }
-    }
+    // Start main loop
+    g_main_loop_run(main_loop);
     
-    // Очистка ресурсов
+    // Cleanup resources
     destroyAllWindows();
     gst_caps_unref(caps);
     
-    // Останавливаем конвейеры
     gst_element_set_state(src_data.pipeline, GST_STATE_NULL);
     gst_element_set_state(dst_data.pipeline, GST_STATE_NULL);
     
-    // Освобождаем ресурсы конвейеров
     gst_object_unref(GST_OBJECT(src_data.pipeline));
     gst_object_unref(GST_OBJECT(dst_data.pipeline));
     
-    // Останавливаем главный цикл, если он ещё запущен
-    if (g_main_loop_is_running(loop)) {
-        g_main_loop_quit(loop);
-    }
-    g_main_loop_unref(loop);
+    g_main_loop_unref(main_loop);
     
     std::cout << "Программа завершена" << std::endl;
     

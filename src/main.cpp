@@ -157,6 +157,11 @@ Mat gst_sample_to_mat(GstSample* sample) {
 
 // Функция для обработки кадров с помощью OpenCV
 Mat process_frame(const Mat &input_frame) {
+    if(input_frame.empty()) {
+        std::cerr << "Error: Empty input frame" << std::endl;
+        return Mat();
+    }
+
     Mat processed_frame;
     
     // Делаем копию входного кадра для обработки
@@ -210,7 +215,7 @@ static GstFlowReturn new_sample_callback(GstElement *sink, gpointer data) {
     // Display the result
     imshow("GStreamer + OpenCV", processed_frame);
     int key = waitKey(30);
-    if (key == 27) { // ESC key
+    if (key == 27 && main_loop) { // ESC key
         g_main_loop_quit(main_loop);
     }
     
